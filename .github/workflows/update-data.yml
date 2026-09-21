@@ -1,0 +1,46 @@
+name: update-data
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Sync from the official site
+        continue-on-error: true
+        run: node sync.mjs
+
+      - name: Measure store logos
+        continue-on-error: true
+        run: |
+          npm install --no-save --no-package-lock sharp@0.33
+          node logos.mjs
+
+      - name: Report
+        if: always()
+        run: cat sync-report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Save data.json
+        run: |
+          rm -rf node_modules
+          git config user.name 'center-map bot'
+          git config user.email 'actions@users.noreply.github.com'
+          if git diff --quiet -- data.json; then
+            echo 'no changes'
+          else
+            git add data.json
+            git commit -m "data: weekly sync"
+            git push
+          fi
