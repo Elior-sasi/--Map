@@ -142,7 +142,7 @@ function rebuildPlan(d) {
     for (const lv of levels) {
       const list = (byBF.get(`${b.id}|${lv.id}`) || []).slice().sort((x, y) => (x.category || '').localeCompare(y.category || '') || x.canonical_name.localeCompare(y.canonical_name, 'he'));
       const fid = `${b.id}-${lv.id}`;
-      const depth = list.length > 40 ? 0.80 : 0.84;
+      const depth = list.length > 40 ? 0.66 : 0.70;
       const inner = scaleToward(b.outline, c, depth), corr = scaleToward(b.outline, c, depth - 0.07);
       const steps = Math.max(8, Math.round(perimeter(corr) / 10));
       const ring = [];
@@ -168,7 +168,7 @@ function rebuildPlan(d) {
       const vid = `${b.id}-${kind}-1`, per = [];
       for (const lv of levels) {
         const ring = corridor.get(`${b.id}|${lv.id}`); if (!ring) continue;
-        const nd = node(`${b.id}-${lv.id}:${kind.toUpperCase()}`, lv.id, b.id, alongPoly(scaleToward(b.outline, c, 0.68), at).p, 'vertical',
+        const nd = node(`${b.id}-${lv.id}:${kind.toUpperCase()}`, lv.id, b.id, alongPoly(scaleToward(b.outline, c, 0.5), at).p, 'vertical',
           { ref: vid, landmark_he: kind === 'elevator' ? 'המעלית' : 'הדרגנוע', landmark_en: kind === 'elevator' ? 'the elevator' : 'the escalator' });
         let best = ring[0], bd = Infinity;
         for (const r of ring) { const dd = dist([r.x, r.y], [nd.x, nd.y]); if (dd < bd) { bd = dd; best = r; } }
@@ -182,6 +182,15 @@ function rebuildPlan(d) {
         edge(per[i].nd, per[i + 1].nd, { d: kind === 'elevator' ? 4 : 12 * gap, kind, floor_change: true, accessible: acc, vertical: vid });
       }
       verticals.push({ id: vid, kind, building: b.id, levels: levels.map(l => l.id), accessible: acc, tier: 'schematic' });
+    }
+    for (const f of facilities) {
+      if (f.building !== b.id || !f.level || !/^toilet/.test(f.kind) || (f.x != null && f.position_tier !== 'schematic')) continue;
+      const ring = corridor.get(`${b.id}|${f.level}`); if (!ring) continue;
+      const nd = node(`${b.id}-${f.level}:WC:${f.id}`, f.level, b.id, alongPoly(scaleToward(b.outline, c, 0.5), 0.4).p, 'facility', { ref: f.id, landmark_he: 'השירותים', landmark_en: 'the restrooms' });
+      let best = ring[0], bd = Infinity;
+      for (const r of ring) { const dd = dist([r.x, r.y], [nd.x, nd.y]); if (dd < bd) { bd = dd; best = r; } }
+      edge(nd, best);
+      Object.assign(f, { x: nd.x, y: nd.y, node: nd.id, position_tier: 'schematic', note_he: 'המיקום בקומה משוער - הבניין והקומה לפי האתר הרשמי' });
     }
   }
   // bridges (levels 2-3) and gates, from the geometry already in the file
