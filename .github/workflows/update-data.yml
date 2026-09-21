@@ -3,7 +3,6 @@ name: update-data
 on:
   schedule:
     - cron: '0 3 * * *'
-'
   workflow_dispatch:
 
 permissions:
@@ -42,6 +41,6 @@ jobs:
             echo 'no changes'
           else
             git add data.json
-            git commit -m "data: weekly sync"
+            git commit -m "data: daily sync"
             git push
           fi
