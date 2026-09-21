@@ -121,6 +121,11 @@ function slicePoly(poly, t0, t1) {
   for (let n = 0; n < poly.length + 2; n++) { if (i === (e.i + 1) % poly.length) break; pts.push(poly[i]); i = (i + 1) % poly.length; }
   pts.push(e.p); return pts;
 }
+
+// kiosks / stands: the official name says so ("דוכן") -> a small island in the corridor, not a shop along the wall
+const KIOSK_RE = /דוכן|קיוסק|\bkiosk\b|\bstand\b/i;
+const isKiosk = biz => biz.format === 'kiosk' || KIOSK_RE.test(`${biz.canonical_name || ''} ${biz.name_he || ''} ${biz.name_en || ''}`);
+function kioskPoly(p, s = 2.6) { return [[p[0] - s, p[1] - s], [p[0] + s, p[1] - s], [p[0] + s, p[1] + s], [p[0] - s, p[1] + s]].map(round); }
 function rebuildPlan(d) {
   const levels = d.levels, buildings = d.buildings;
   const byBF = new Map();
@@ -140,7 +145,10 @@ function rebuildPlan(d) {
   for (const b of buildings) {
     const c = centroid(b.outline);
     for (const lv of levels) {
-      const list = (byBF.get(`${b.id}|${lv.id}`) || []).slice().sort((x, y) => (x.category || '').localeCompare(y.category || '') || x.canonical_name.localeCompare(y.canonical_name, 'he'));
+      const all = (byBF.get(`${b.id}|${lv.id}`) || []);
+      for (const biz of all) biz.format = isKiosk(biz) ? 'kiosk' : 'shop';
+      const kiosks = all.filter(x => x.format === 'kiosk');
+      const list = all.filter(x => x.format !== 'kiosk').slice().sort((x, y) => (x.category || '').localeCompare(y.category || '') || x.canonical_name.localeCompare(y.canonical_name, 'he'));
       const fid = `${b.id}-${lv.id}`;
       const depth = list.length > 40 ? 0.66 : 0.70;
       const inner = scaleToward(b.outline, c, depth), corr = scaleToward(b.outline, c, depth - 0.07);
@@ -161,6 +169,17 @@ function rebuildPlan(d) {
         for (const r of ring) { const dd = dist([r.x, r.y], [door.x, door.y]); if (dd < bd) { bd = dd; best = r; } }
         edge(door, best);
         units.push({ id, floor: fid, level: lv.id, building: b.id, kind: 'retail', poly, label, door: door.id, tier: 'schematic' });
+        d.locations.find(l => l.business === biz.id && !l.valid_to).unit = id;
+      });
+      kiosks.forEach((biz, i) => {
+        const pos = alongPoly(scaleToward(b.outline, c, depth - 0.16), (i + 0.5) / kiosks.length * 0.8 + 0.1).p;
+        seq++;
+        const id = `CENTER-${b.id}-${lv.id.replace('floor-', 'F')}-K${String(seq).padStart(4, '0')}`;
+        const door = node(`${fid}:door:${id}`, lv.id, b.id, pos, 'door', { ref: id });
+        let best = ring[0], bd = Infinity;
+        for (const r of ring) { const dd = dist([r.x, r.y], [door.x, door.y]); if (dd < bd) { bd = dd; best = r; } }
+        edge(door, best);
+        units.push({ id, floor: fid, level: lv.id, building: b.id, kind: 'kiosk', poly: kioskPoly(pos), label: round(pos), door: door.id, tier: 'schematic' });
         d.locations.find(l => l.business === biz.id && !l.valid_to).unit = id;
       });
     }
