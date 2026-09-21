@@ -1,6 +1,6 @@
 // סנטר-Map service worker - the whole app is one file, so caching it is enough for full offline use.
-const CACHE = 'center-map-de358795a94a';
-const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './maskable-512.png'];
+const CACHE = 'center-map-de358795a94a-94e2d24b';
+const ASSETS = ['./', './index.html', './data.json', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('message', e => { if (e.data === 'skip-waiting') self.skipWaiting(); });
@@ -9,6 +9,14 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   if (e.request.mode === 'navigate') {                       // app shell, offline-first
     e.respondWith(caches.match('./index.html').then(c => c || fetch(e.request)));
+    return;
+  }
+  if (u.pathname.endsWith('/data.json')) {                    // stale-while-revalidate: instant, then fresh
+    e.respondWith(caches.open(CACHE).then(async c => {
+      const cached = await c.match('./data.json');
+      const net = fetch(e.request).then(r => { if (r.ok) c.put('./data.json', r.clone()); return r; }).catch(() => cached);
+      return cached || net;
+    }));
     return;
   }
   if (u.origin === location.origin) {
