@@ -151,7 +151,7 @@ function rebuildPlan(d) {
       corridor.set(`${b.id}|${lv.id}`, ring);
       list.forEach((biz, i) => {
         const t0 = i / list.length, t1 = (i + 1) / list.length;
-        const poly = [...slicePoly(b.outline, t0 + 0.0015, t1 - 0.0015), ...slicePoly(inner, t1 - 0.0015, t0 + 0.0015)].map(round);
+        const poly = [...slicePoly(b.outline, t0 + 0.0015, t1 - 0.0015), ...slicePoly(inner, t0 + 0.0015, t1 - 0.0015).reverse()].map(round);
         const mid = lerp(alongPoly(inner, t0).p, alongPoly(inner, t1).p, 0.5);
         const label = round(lerp(mid, lerp(alongPoly(b.outline, t0).p, alongPoly(b.outline, t1).p, 0.5), 0.45));
         seq++;
@@ -293,8 +293,8 @@ for (const [id, biz] of known) {
 for (const [id, biz] of known) if (seen.has(id) && biz.pending_flag === 'possibly_closed') { delete biz.pending_flag; addChange('reopened', biz, `${biz.canonical_name} חזר להופיע באתר הרשמי`); }
 
 // 4. rebuild the schematic plan so new businesses get a spot, then save
+rebuildPlan(data);                 // always: keeps the schematic layout in step with the current code and data
 if (changes.length) {
-  rebuildPlan(data);
   data.changes = [...changes, ...(data.changes || [])].slice(0, 400);
   data.meta.version = `real-plan-${today}`;
   data.meta.today = today;

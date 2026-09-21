@@ -1,5 +1,5 @@
 // סנטר-Map service worker - the whole app is one file, so caching it is enough for full offline use.
-const CACHE = 'center-map-de358795a94a-94e2d24b';
+const CACHE = 'center-map-8be6e43cfbbb-cb9359ea';
 const ASSETS = ['./', './index.html', './data.json', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
