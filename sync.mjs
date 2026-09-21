@@ -13,9 +13,9 @@ import fs from 'node:fs';
 
 const DRY = process.argv.includes('--dry');
 const FILE = 'data.json';
-const BASE = 'https://www.dizengof-center.co.il';
+const BASE = process.env.CM_BASE || 'https://www.dizengof-center.co.il';
 const UA = 'CenterMapBot/1.0 (+https://github.com/Elior-sasi; independent map project)';
-const PAUSE_MS = 700;                    // polite rate limit
+const PAUSE_MS = process.env.CM_BASE ? 0 : 700;                    // polite rate limit
 const MIN_RATIO = 0.6;                   // abort if we see less than 60% of the known businesses
 
 const log = [];
@@ -33,51 +33,62 @@ async function get(url) {
 
 // ---------- tiny HTML helpers (no dependencies) ----------
 const stripTags = s => s.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ');
-const decode = s => s.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+const decode = s => s.replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
+  .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 const clean = s => decode(stripTags(s)).replace(/\s+/g, ' ').trim();
 
-/** Business pages look like /shops/<category>/?ItemID=12345 - collect ids and names from a listing page. */
-function parseListing(html) {
-  const out = new Map();
-  const re = /<a[^>]+href="([^"]*ItemID=(\d+)[^"]*)"[^>]*>([\s\S]{0,400}?)<\/a>/gi;
-  let m;
-  while ((m = re.exec(html))) {
-    const [, href, id, inner] = m;
-    const name = clean(inner).slice(0, 80);
-    if (!name) continue;
-    const prev = out.get(id);
-    if (!prev || name.length > prev.name.length) out.set(id, { id, name, url: href.startsWith('http') ? href : BASE + href });
+/**
+ * The official directory is paged: /shops?pageNum=1..N. Every business is a block that starts with
+ * <div data-shop="True" … item-id="…"> and holds the name (<h3>), the location text (<h4 data-cf="4467">)
+ * and the opening hours per weekday (<h4 data-cf="5073"> = Sunday … "5079" = Saturday).
+ * Same format the project's first import (collect-official.py) was built on.
+ */
+function parseShops(html) {
+  const rows = [];
+  for (const block of html.split(/<div\s+data-shop="True"/).slice(1)) {
+    const val = re => { const m = re.exec(block); return m ? clean(m[1]) : null; };
+    const id = val(/item-id="([^"]+)"/), name = val(/<h3[^>]*>([\s\S]*?)<\/h3>/);
+    if (!id || !name) continue;
+    const fields = {};
+    for (const m of block.matchAll(/<h4[^>]*data-cf="(\d+)"[^>]*>([\s\S]*?)<\/h4>/g)) fields[m[1]] = clean(m[2]);
+    const href = val(/<a href="([^"]+)"/);
+    rows.push({
+      id, name, where: fields['4467'] || '',
+      weekly: [0, 1, 2, 3, 4, 5, 6].map(i => fields[String(5073 + i)] ?? null),
+      category_id: val(/CategoryID="([^"]+)"/), category_name: val(/CategoryName="([^"]+)"/),
+      url: href ? (href.startsWith('http') ? href : BASE + href) : null
+    });
   }
-  return [...out.values()];
+  return rows;
 }
 
 const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-/** "א'-ה' 10:00-20:00 ו' 9:00-15:00 מוצ"ש סגור" → weekly rules */
-function parseHours(text) {
-  const t = text.replace(/[–—]/g, '-');
-  const grab = re => { const m = re.exec(t); return m ? [m[1], m[2]] : null; };
-  const closed = re => re.test(t);
-  const week = grab(/א['׳]?\s*-\s*ה['׳]?[^0-9]{0,12}(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
-  const fri = grab(/ו['׳][^0-9]{0,12}(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
-  const sat = grab(/(?:מוצ["״]?ש|שבת)[^0-9]{0,12}(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
-  const satClosed = closed(/(?:מוצ["״]?ש|שבת)[^0-9]{0,12}סגור/);
-  if (!week && !fri && !sat) return null;
-  const pad = x => (x.length === 4 ? `0${x}` : x);
-  const rules = [];
-  for (const d of ['sun', 'mon', 'tue', 'wed', 'thu']) if (week) rules.push({ day: d, opens: pad(week[0]), closes: pad(week[1]), source: 'official' });
-  if (fri) rules.push({ day: 'fri', opens: pad(fri[0]), closes: pad(fri[1]), source: 'official' });
-  if (sat) rules.push({ day: 'sat', opens: pad(sat[0]), closes: pad(sat[1]), source: 'official' });
-  else if (satClosed) rules.push({ day: 'sat', closed: true, source: 'official' });
-  return rules.length ? rules : null;
+/** ["10:00-20:00", …, "סגור", null] → weekly rules (a missing day stays unknown, never guessed) */
+function hoursFrom(weekly) {
+  const out = [];
+  weekly.forEach((raw, i) => {
+    if (raw == null || String(raw).trim() === '') return;
+    if (/סגור|closed/i.test(raw)) { out.push({ day: DAYS[i], closed: true, source: 'official' }); return; }
+    const m = String(raw).replace(/[–—]/g, '-').match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+    if (!m) return;
+    const pad = t => (t.length === 4 ? `0${t}` : t);
+    out.push({ day: DAYS[i], opens: pad(m[1]), closes: pad(m[2]) === '24:00' ? '00:00' : pad(m[2]), source: 'official' });
+  });
+  return out;
 }
 
+const WORD_FLOORS = { 'ראשונה': 1, 'ראשון': 1, 'שנייה': 2, 'שניה': 2, 'שני': 2, 'שלישית': 3, 'שלישי': 3, 'רביעית': 4, 'רביעי': 4, 'קרקע': 0 };
+/** "בניין A, קומה 1-" / "בניין B, קומה שנייה" → { building, floor } */
 function parseWhere(text) {
   const building = /בניין\s*([AB])/i.exec(text);
-  const floorRaw = /קומה\s*(\d+-(?!\d)|-?\d+)/.exec(text);
-  let floor = floorRaw ? floorRaw[1] : null;
-  if (floor && /^\d+-$/.test(floor)) floor = `-${floor.slice(0, -1)}`;   // "1-" (RTL) → "-1"
-  const phone = /0\d{1,2}-?\d{7}/.exec(text);
-  return { building: building ? building[1].toUpperCase() : null, floor: floor != null ? Number(floor) : null, phone: phone ? phone[0] : null };
+  const fm = /קומ[הת]\s*(-?\d+(?:\.\d+)?-?|ראשונה|ראשון|שנייה|שניה|שני|שלישית|שלישי|רביעית|רביעי|קרקע)/.exec(text);
+  let floor = null;
+  if (fm) {
+    const f = fm[1];
+    floor = f in WORD_FLOORS ? WORD_FLOORS[f] : f.endsWith('-') ? -Number(f.slice(0, -1)) : Number(f);   // "1-" (RTL) → -1
+    if (Number.isNaN(floor)) floor = null;
+  }
+  return { building: building ? building[1].toUpperCase() : null, floor };
 }
 
 // ---------- schematic plan (same algorithm the project ships with) ----------
@@ -199,24 +210,21 @@ function rebuildPlan(d) {
 
 // ---------- main ----------
 const data = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-const known = new Map(data.businesses.filter(b => b.official_url).map(b => {
-  const id = /ItemID=(\d+)/.exec(b.official_url)?.[1];
-  return [id || b.id, b];
-}));
+const known = new Map(data.businesses.map(b => [/ItemID=(\d+)/.exec(b.official_url || '')?.[1] || b.id.replace(/^dc-/, ''), b]));
+const levelOf = floor => floor == null ? null : data.levels.find(l => l.order === Number(floor))?.id || null;
 say(`# סנטר-Map sync ${nowIso}`);
 say(`known businesses: ${data.businesses.length}`);
 
-// 1. discover: every category listing the current data points at
-const catPaths = [...new Set(data.businesses.map(b => (b.official_url || '').match(/\/shops\/[^/?]+\//)?.[0]).filter(Boolean))];
-say(`category pages: ${catPaths.length}`);
+// 1. read the whole paged directory
 const seen = new Map();
-for (const p of catPaths) {
-  try {
-    const html = await get(BASE + p);
-    const found = parseListing(html);
-    for (const f of found) if (!seen.has(f.id)) seen.set(f.id, { ...f, category_path: p });
-    say(`  ${p} → ${found.length}`);
-  } catch (e) { say(`  ${p} → failed (${e.message})`); }
+for (let page = 1; page <= 40; page++) {
+  let rows = [];
+  try { rows = parseShops(await get(`${BASE}/shops?pageNum=${page}`)); }
+  catch (e) { say(`  page ${page} → failed (${e.message})`); break; }
+  const fresh = rows.filter(r => !seen.has(r.id));
+  say(`  page ${page} → ${rows.length}`);
+  if (!fresh.length) break;                       // past the last page (empty or repeating)
+  for (const r of fresh) seen.set(r.id, r);
 }
 say(`discovered: ${seen.size}`);
 
@@ -226,64 +234,57 @@ if (seen.size < known.size * MIN_RATIO) {
   process.exit(0);
 }
 
-// 2. details for new and for a rotating slice of the existing ones (keeps each run short)
+// 2. apply: new businesses, moves, hours, renames
 const changes = [];
 const addChange = (kind, biz, summary) => changes.push({
   id: `sync-${today}-${kind}-${biz?.id || Math.random().toString(36).slice(2, 7)}`,
   kind, business: biz?.id || null, at: nowIso, confirmed: kind !== 'disappeared', tier: 'official', public_log: true, summary_he: summary
 });
+const catByName = new Map((data.categories || []).map(c => [c.name_he, c.id]));
 
-const week = Math.floor(Date.now() / 6048e5) % 4;                 // details refresh: a quarter of the list each week
-const newIds = [...seen.keys()].filter(id => !known.has(id));
-const refresh = [...known.keys()].filter((id, i) => i % 4 === week);
-say(`new: ${newIds.length} · detail refresh this run: ${refresh.length}`);
-
-for (const id of [...newIds, ...refresh]) {
-  const rec = seen.get(id);
-  if (!rec) continue;
-  let text = '';
-  try { text = clean(await get(rec.url)); } catch (e) { say(`  ItemID=${id} → ${e.message}`); continue; }
-  const where = parseWhere(text);
-  const hours = parseHours(text);
+for (const [id, rec] of seen) {
+  const where = parseWhere(rec.where);
+  const hours = hoursFrom(rec.weekly);
+  const level = levelOf(where.floor);
   const existing = known.get(id);
   if (!existing) {
     const biz = {
       id: `dc-${id}`, slug: `dc-${id}`, canonical_name: rec.name, name_he: rec.name, name_en: null, aliases: [],
-      category: data.businesses.find(b => (b.official_url || '').includes(rec.category_path))?.category || null,
-      status: 'new', tier: 'official', phone: where.phone, website: null, description_he: null,
-      hours: hours || [], location_text: null, official_url: rec.url, logo: null, products: [], topics: [], near: [], kosher: null,
-      sources: { name: 'official', hours: hours ? 'official' : null }, created_at: nowIso, updated_at: nowIso, last_checked: nowIso
+      category: catByName.get(rec.category_name) || rec.category_id || null,
+      status: 'new', tier: 'official', phone: null, website: null, description_he: null,
+      hours, location_text: rec.where || null, official_url: rec.url, logo: null, products: [], topics: [], near: [], kosher: null,
+      sources: { name: 'official', hours: hours.length ? 'official' : null }, created_at: nowIso, updated_at: nowIso, last_checked: nowIso
     };
     data.businesses.push(biz);
-    data.locations.push({ business: biz.id, building: where.building, level: where.floor != null ? `floor-${where.floor}` : null, unit: null,
-      precision: where.floor != null ? 'floor' : where.building ? 'building' : 'venue', valid_from: today, valid_to: null, confidence: 95, source: 'official' });
+    data.locations.push({ business: biz.id, building: where.building, level, unit: null,
+      precision: level ? 'floor' : where.building ? 'building' : 'venue', valid_from: today, valid_to: null, confidence: 95, source: 'official' });
     addChange('new', biz, `נפתח: ${biz.canonical_name}`);
     say(`  + ${rec.name}`);
     continue;
   }
   existing.last_checked = nowIso;
   const loc = data.locations.find(l => l.business === existing.id && !l.valid_to);
-  const newLevel = where.floor != null ? `floor-${where.floor}` : loc?.level;
-  if (loc && where.building && (loc.building !== where.building || loc.level !== newLevel)) {
-    addChange('moved_floor', existing, `${existing.canonical_name}: עבר מ${loc.building || ''} ${loc.level || ''} ל${where.building} ${newLevel || ''}`);
+  if (loc && where.building && level && (loc.building !== where.building || loc.level !== level)) {
+    const name = lv => data.levels.find(l => l.id === lv)?.name_he || lv || '';
+    addChange('moved_floor', existing, `${existing.canonical_name}: עבר מבניין ${loc.building || '?'} ${name(loc.level)} לבניין ${where.building} ${name(level)}`);
     loc.valid_to = today;
-    data.locations.push({ ...loc, building: where.building, level: newLevel, unit: null, valid_from: today, valid_to: null });
-    existing.status = 'moved';
+    data.locations.push({ ...loc, building: where.building, level, unit: null, valid_from: today, valid_to: null });
+    existing.status = 'moved'; existing.location_text = rec.where;
+    say(`  → ${rec.name}: ${rec.where}`);
   }
-  if (hours && JSON.stringify(hours) !== JSON.stringify(existing.hours)) {
+  if (hours.length && JSON.stringify(hours) !== JSON.stringify(existing.hours)) {
     existing.hours = hours; existing.sources = { ...existing.sources, hours: 'official' };
     addChange('hours_changed', existing, `${existing.canonical_name}: שעות הפתיחה עודכנו`);
   }
-  if (where.phone && where.phone !== existing.phone) { existing.phone = where.phone; existing.sources = { ...existing.sources, phone: 'official' }; }
   if (rec.name && rec.name !== existing.canonical_name && rec.name.length > 2) {
     addChange('renamed', existing, `שינוי שם: ${existing.canonical_name} ← ${rec.name}`);
-    existing.canonical_name = rec.name;
+    existing.canonical_name = rec.name; existing.name_he = rec.name;
   }
 }
 
 // 3. businesses that vanished from the site: flagged, never deleted
 for (const [id, biz] of known) {
-  if (seen.has(id) || biz.status === 'closed_permanently') continue;
+  if (seen.has(id) || biz.status === 'closed_permanently' || biz.tier === 'demo') continue;
   if (biz.pending_flag === 'possibly_closed') continue;
   biz.pending_flag = 'possibly_closed';
   addChange('disappeared', biz, `${biz.canonical_name} לא מופיע יותר באתר הרשמי - בבדיקה`);
