@@ -1,0 +1,12 @@
+{
+  "firebase": {
+    "apiKey": "AIzaSyDIWItOT9SZyFArmUXjmP2sriF0iYOKPOw",
+    "authDomain": "center-map-4d2ae.firebaseapp.com",
+    "projectId": "center-map-4d2ae",
+    "storageBucket": "center-map-4d2ae.firebasestorage.app",
+    "messagingSenderId": "404920441614",
+    "appId": "1:404920441614:web:437a12f180ca0ecb92d55f"
+  },
+  "vapidPublicKey": "BF7yiHaF3LLUZuKRBkbD85dpcstO_dbNKcBrNQnklSbt4tLy_eowBybXUBlaJ2uK-cbfeKMN47OuU4uQmrNJTSY",
+  "admin": "nmkhj5@gmail.com"
+}
